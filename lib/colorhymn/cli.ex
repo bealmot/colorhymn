@@ -12,6 +12,9 @@ defmodule Colorhymn.CLI do
     --format=html    Output HTML with inline styles
     --dither         Enable organic color dithering
     --flow           Enable flowing temperature (colors shift through log)
+    --theme=NAME     Color theme (default: rainbow)
+                     Options: rainbow, monochrome, temp-lock-warm,
+                     temp-lock-cool, terminal, high-contrast, semantic
     --intensity=N    Dither intensity 0.5-3.0 (default: 1.0)
     --tint=N         Hue offset in degrees (-180 to 180) to shift palette
     --sat=N          Saturation multiplier (0.5=muted, 1.5=vivid, default: 1.0)
@@ -21,12 +24,13 @@ defmodule Colorhymn.CLI do
   """
 
   alias Colorhymn.{FirstSight, Expression, Flow}
-  alias Colorhymn.Expression.Color
+  alias Colorhymn.Expression.{Color, Theme}
 
   @default_opts %{
     format: :ansi,
     dither: false,
     flow: false,
+    theme: :rainbow,
     intensity: 1.0,
     tint: 0.0,
     sat: 1.0,
@@ -70,6 +74,13 @@ defmodule Colorhymn.CLI do
 
   defp parse_args(["--flow" | rest], opts, files) do
     parse_args(rest, Map.put(opts, :flow, true), files)
+  end
+
+  defp parse_args(["--theme=" <> name | rest], opts, files) do
+    case Theme.parse(name) do
+      {:ok, theme} -> parse_args(rest, Map.put(opts, :theme, theme), files)
+      {:error, msg} -> {:error, msg}
+    end
   end
 
   defp parse_args(["--no-line-nums" | rest], opts, files) do
@@ -158,7 +169,8 @@ defmodule Colorhymn.CLI do
       palette = Expression.from_perception(sight,
         tint: opts.tint,
         sat: opts.sat,
-        contrast: opts.contrast
+        contrast: opts.contrast,
+        theme: opts.theme
       )
 
       case opts.format do
@@ -372,7 +384,8 @@ defmodule Colorhymn.CLI do
     Expression.from_perception(modified_sight,
       tint: opts.tint,
       sat: opts.sat,
-      contrast: opts.contrast
+      contrast: opts.contrast,
+      theme: opts.theme
     )
   end
 

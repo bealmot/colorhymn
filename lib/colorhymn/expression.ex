@@ -7,7 +7,7 @@ defmodule Colorhymn.Expression do
   be exported in various formats (hex, HSL, ANSI, CSS).
   """
 
-  alias Colorhymn.Expression.{Color, Palette, Dither}
+  alias Colorhymn.Expression.{Color, Palette, Dither, Theme}
   alias Colorhymn.Perception
   alias Colorhymn.Tokenizer
   alias Colorhymn.Tokenizer.Token
@@ -26,6 +26,8 @@ defmodule Colorhymn.Expression do
     - tint: Hue offset in degrees (-180 to 180) to shift the entire palette
     - sat: Saturation multiplier (0.5 = muted, 1.5 = vivid)
     - contrast: Contrast multiplier (0.5 = flat, 1.5 = punchy)
+    - theme: Color theme constraint (:rainbow, :monochrome, :temp_lock_warm,
+             :temp_lock_cool, :terminal, :high_contrast, :semantic)
   """
   def from_perception(sight, opts \\ [])
 
@@ -40,7 +42,12 @@ defmodule Colorhymn.Expression do
     |> maybe_put(:sat_mult, Keyword.get(opts, :sat))
     |> maybe_put(:contrast_mult, Keyword.get(opts, :contrast))
 
-    Palette.generate(temperature_score, perception_map)
+    # Generate base palette
+    palette = Palette.generate(temperature_score, perception_map)
+
+    # Apply theme transformation if specified
+    theme = Keyword.get(opts, :theme, :rainbow)
+    Theme.apply(palette, theme, temperature_score: temperature_score)
   end
 
   defp maybe_put(map, _key, nil), do: map
@@ -333,5 +340,23 @@ defmodule Colorhymn.Expression do
   def token_to_palette_key(:key), do: :keyword
   def token_to_palette_key(:equals), do: :operator
   def token_to_palette_key(:text), do: :foreground
+
+  # Networking tokens
+  def token_to_palette_key(:cidr), do: :cidr
+  def token_to_palette_key(:protocol), do: :protocol
+  def token_to_palette_key(:interface), do: :interface
+  def token_to_palette_key(:http_method), do: :http_method
+  def token_to_palette_key(:http_status), do: :http_status
+
+  # VPN/IPSec tokens
+  def token_to_palette_key(:vpn_keyword), do: :vpn_keyword
+  def token_to_palette_key(:spi), do: :spi
+
+  # Windows tokens
+  def token_to_palette_key(:event_id), do: :event_id
+  def token_to_palette_key(:sid), do: :sid
+  def token_to_palette_key(:registry_key), do: :registry_key
+  def token_to_palette_key(:hresult), do: :hresult
+
   def token_to_palette_key(_), do: :foreground
 end

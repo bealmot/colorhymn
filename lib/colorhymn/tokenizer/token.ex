@@ -18,6 +18,12 @@ defmodule Colorhymn.Tokenizer.Token do
     :string | :keyword | :log_level |
     :identifier | :operator | :bracket |
     :key | :equals |
+    # Networking
+    :cidr | :protocol | :interface | :http_method | :http_status |
+    # VPN/IPSec
+    :vpn_keyword | :spi |
+    # Windows
+    :event_id | :sid | :registry_key | :hresult |
     :text
 
   @type t :: %__MODULE__{

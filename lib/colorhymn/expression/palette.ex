@@ -37,6 +37,23 @@ defmodule Colorhymn.Expression.Palette do
     :uuid,
     :log_level,
 
+    # Networking tokens
+    :cidr,
+    :protocol,
+    :interface,
+    :http_method,
+    :http_status,
+
+    # VPN/IPSec tokens
+    :vpn_keyword,
+    :spi,
+
+    # Windows tokens
+    :event_id,
+    :sid,
+    :registry_key,
+    :hresult,
+
     # State colors
     :state_positive,
     :state_negative,
@@ -251,6 +268,23 @@ defmodule Colorhymn.Expression.Palette do
       uuid: derive_token_color_v2(tinted_hue, :uuid, effective_saturation, effective_warmth, effective_contrast),
       log_level: derive_token_color_v2(tinted_hue, :log_level, effective_saturation, effective_warmth, effective_contrast),
 
+      # Networking token colors
+      cidr: derive_token_color_v2(tinted_hue, :cidr, effective_saturation, effective_warmth, effective_contrast),
+      protocol: derive_token_color_v2(tinted_hue, :protocol, effective_saturation * 0.9, effective_warmth, effective_contrast),
+      interface: derive_token_color_v2(tinted_hue, :interface, effective_saturation * 0.85, effective_warmth, effective_contrast),
+      http_method: derive_token_color_v2(tinted_hue, :http_method, effective_saturation * 1.1, effective_warmth, effective_contrast),
+      http_status: derive_token_color_v2(tinted_hue, :http_status, effective_saturation, effective_warmth, effective_contrast),
+
+      # VPN/IPSec token colors
+      vpn_keyword: derive_token_color_v2(tinted_hue, :vpn_keyword, effective_saturation * 0.95, effective_warmth, effective_contrast),
+      spi: derive_token_color_v2(tinted_hue, :spi, effective_saturation * 0.8, effective_warmth, effective_contrast),
+
+      # Windows token colors
+      event_id: derive_token_color_v2(tinted_hue, :event_id, effective_saturation, effective_warmth, effective_contrast),
+      sid: derive_token_color_v2(tinted_hue, :sid, effective_saturation * 0.75, effective_warmth, effective_contrast),
+      registry_key: derive_token_color_v2(tinted_hue, :registry_key, effective_saturation * 0.85, effective_warmth, effective_contrast),
+      hresult: derive_token_color_v2(tinted_hue, :hresult, effective_saturation * 1.1, effective_warmth, effective_contrast),
+
       # State colors
       state_positive: Color.new(normalize_hue(120 + hue_offset), effective_saturation * 0.7, 0.45),
       state_negative: Color.new(normalize_hue(10 + hue_offset), effective_saturation, 0.50),
@@ -378,7 +412,24 @@ defmodule Colorhymn.Expression.Palette do
     bracket: -15,        # Cool
     comment: 0,          # Base hue, very desaturated
     uuid: -50,           # Purple direction
-    log_level: 35        # Warm (gold)
+    log_level: 35,       # Warm (gold)
+
+    # Networking tokens
+    cidr: 0,             # Same as IP (network)
+    protocol: -30,       # Cool blue-cyan
+    interface: -20,      # Cool cyan
+    http_method: 45,     # Warm gold
+    http_status: 30,     # Warm orange
+
+    # VPN/IPSec tokens
+    vpn_keyword: -40,    # Cool purple-blue
+    spi: -55,            # Purple (security/crypto)
+
+    # Windows tokens
+    event_id: 40,        # Warm gold
+    sid: -60,            # Purple (security)
+    registry_key: -35,   # Cool blue-purple
+    hresult: 15          # Warm (error codes)
   }
 
   @token_lightness %{
@@ -394,7 +445,24 @@ defmodule Colorhymn.Expression.Palette do
     bracket: 0.50,
     comment: 0.42,
     uuid: 0.55,
-    log_level: 0.58
+    log_level: 0.58,
+
+    # Networking tokens
+    cidr: 0.55,
+    protocol: 0.58,
+    interface: 0.52,
+    http_method: 0.60,
+    http_status: 0.58,
+
+    # VPN/IPSec tokens
+    vpn_keyword: 0.55,
+    spi: 0.52,
+
+    # Windows tokens
+    event_id: 0.60,
+    sid: 0.50,
+    registry_key: 0.55,
+    hresult: 0.55
   }
 
   defp derive_token_color_v2(base_hue, token_type, saturation, warmth, contrast \\ 1.0) do

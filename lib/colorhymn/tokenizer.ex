@@ -56,6 +56,45 @@ defmodule Colorhymn.Tokenizer do
   # Port numbers (after colon, 1-65535)
   @port_pattern ~r/:(\d{1,5})\b/
 
+  # CIDR notation (IP/prefix)
+  @cidr_pattern ~r/\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\/(?:3[0-2]|[12]?[0-9])\b/
+
+  # Network protocols
+  @protocol_pattern ~r/\b(TCP|UDP|ICMP|ICMPv6|SCTP|GRE|ESP|AH|IGMP|OSPF|BGP|RIP|EIGRP|VRRP|HSRP|L2TP|PPTP)\b/i
+
+  # Network interfaces (Linux/BSD style)
+  @interface_pattern ~r/\b(eth|enp|ens|eno|wlan|wlp|virbr|veth|docker|br|bond|lo|tap|tun|ppp|vnet)[0-9]+[a-z]?[0-9]*\b/
+
+  # HTTP methods
+  @http_method_pattern ~r/\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE)\b/
+
+  # HTTP status codes (3 digits, common patterns)
+  @http_status_pattern ~r/\b[1-5][0-9]{2}\b/
+
+  # VPN/IPSec keywords
+  @vpn_keywords [
+    "ipsec", "ikev1", "ikev2", "ike", "isakmp", "l2tp", "openvpn", "wireguard",
+    "phase1", "phase2", "sa", "esp", "ah", "tunnel", "transport", "psk",
+    "certificate", "dh", "diffie-hellman", "proposal", "policy", "selector",
+    "spi", "nonce", "initiator", "responder", "rekey", "lifetime",
+    "encryption", "integrity", "prf", "aes", "3des", "sha", "md5", "hmac"
+  ]
+
+  # SPI (Security Parameter Index) - typically 8 hex digits
+  @spi_pattern ~r/\bSPI[=:\s]+(?:0x)?([0-9a-fA-F]{8})\b/i
+
+  # Windows Event IDs
+  @event_id_pattern ~r/\b(?:Event\s*ID|EventID)[=:\s]+(\d{1,5})\b/i
+
+  # Windows Security Identifiers (SID)
+  @sid_pattern ~r/\bS-1-(?:\d+-)+\d+\b/
+
+  # Windows Registry keys
+  @registry_pattern ~r/\b(?:HKEY_(?:LOCAL_MACHINE|CURRENT_USER|CLASSES_ROOT|USERS|CURRENT_CONFIG)|HK(?:LM|CU|CR|U|CC))\\[^\s]+/
+
+  # HRESULT codes (Windows error codes)
+  @hresult_pattern ~r/\b0x8[0-9a-fA-F]{7}\b/
+
   # Hex numbers (0x prefix or standalone hex)
   @hex_pattern ~r/\b0x[0-9a-fA-F]+\b/
 
@@ -131,14 +170,25 @@ defmodule Colorhymn.Tokenizer do
     |> find_emails(line)
     |> find_macs(line)
     |> find_ipv6(line)
+    |> find_cidr(line)           # Before IPv4 (more specific)
     |> find_ipv4(line)
     |> find_paths(line)
+    |> find_registry_keys(line)  # Windows registry
     |> find_domains(line)
     |> find_ports(line)
+    |> find_sids(line)           # Windows SIDs
+    |> find_event_ids(line)      # Windows Event IDs
+    |> find_spis(line)           # VPN SPIs
+    |> find_hresults(line)       # Windows error codes
     |> find_hex_numbers(line)
     |> find_strings(line)
     |> find_keys(line)
+    |> find_http_methods(line)   # HTTP verbs
+    |> find_protocols(line)      # Network protocols
+    |> find_interfaces(line)     # Network interfaces
+    |> find_vpn_keywords(line)   # VPN terminology
     |> find_keywords(line)
+    |> find_http_status(line)    # HTTP status (after keywords, before numbers)
     |> find_numbers(line)
     |> find_brackets(line)
     |> find_operators(line)
@@ -204,6 +254,42 @@ defmodule Colorhymn.Tokenizer do
     |> then(&(tokens ++ &1))
   end
 
+  defp find_cidr(tokens, line) do
+    tokens ++ find_pattern_matches(line, @cidr_pattern, :cidr)
+  end
+
+  defp find_registry_keys(tokens, line) do
+    tokens ++ find_pattern_matches(line, @registry_pattern, :registry_key)
+  end
+
+  defp find_sids(tokens, line) do
+    tokens ++ find_pattern_matches(line, @sid_pattern, :sid)
+  end
+
+  defp find_event_ids(tokens, line) do
+    # Special handling - capture group for event ID number
+    Regex.scan(@event_id_pattern, line, return: :index)
+    |> Enum.map(fn [{full_start, full_len}, {_id_start, _id_len}] ->
+      value = binary_part(line, full_start, full_len)
+      Token.new(:event_id, value, full_start)
+    end)
+    |> then(&(tokens ++ &1))
+  end
+
+  defp find_spis(tokens, line) do
+    # Special handling - capture the whole SPI expression
+    Regex.scan(@spi_pattern, line, return: :index)
+    |> Enum.map(fn [{full_start, full_len} | _] ->
+      value = binary_part(line, full_start, full_len)
+      Token.new(:spi, value, full_start)
+    end)
+    |> then(&(tokens ++ &1))
+  end
+
+  defp find_hresults(tokens, line) do
+    tokens ++ find_pattern_matches(line, @hresult_pattern, :hresult)
+  end
+
   defp find_hex_numbers(tokens, line) do
     tokens ++ find_pattern_matches(line, @hex_pattern, :hex_number)
   end
@@ -222,6 +308,29 @@ defmodule Colorhymn.Tokenizer do
     |> then(&(tokens ++ &1))
   end
 
+  defp find_http_methods(tokens, line) do
+    tokens ++ find_pattern_matches(line, @http_method_pattern, :http_method)
+  end
+
+  defp find_protocols(tokens, line) do
+    tokens ++ find_pattern_matches(line, @protocol_pattern, :protocol)
+  end
+
+  defp find_interfaces(tokens, line) do
+    tokens ++ find_pattern_matches(line, @interface_pattern, :interface)
+  end
+
+  defp find_vpn_keywords(tokens, line) do
+    lower_line = String.downcase(line)
+
+    vpn_tokens = @vpn_keywords
+    |> Enum.flat_map(fn kw ->
+      find_word_positions(lower_line, line, kw, :vpn_keyword)
+    end)
+
+    tokens ++ vpn_tokens
+  end
+
   defp find_keywords(tokens, line) do
     lower_line = String.downcase(line)
 
@@ -231,6 +340,12 @@ defmodule Colorhymn.Tokenizer do
     end)
 
     tokens ++ keyword_tokens
+  end
+
+  defp find_http_status(tokens, line) do
+    # Only match status codes in context (after HTTP/, near keywords, etc.)
+    # For now, simple pattern - can be refined
+    tokens ++ find_pattern_matches(line, @http_status_pattern, :http_status)
   end
 
   defp find_word_positions(lower_line, original_line, word, type) do
