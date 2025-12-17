@@ -153,8 +153,16 @@ defmodule Colorhymn.CLI do
   end
 
   defp process_stdin(opts) do
-    content = IO.read(:stdio, :eof)
-    process_content(content, "stdin", opts)
+    case IO.read(:stdio, :eof) do
+      :eof ->
+        IO.puts(:stderr, "No input received on stdin")
+        System.halt(1)
+      "" ->
+        IO.puts(:stderr, "Empty input received on stdin")
+        System.halt(1)
+      content when is_binary(content) ->
+        process_content(content, "stdin", opts)
+    end
   end
 
   defp process_content(content, filename, opts) do

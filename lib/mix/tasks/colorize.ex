@@ -11,8 +11,16 @@ defmodule Mix.Tasks.Colorize do
   end
 
   def run(["--stdin"]) do
-    content = IO.read(:stdio, :eof)
-    output_json(content, "stdin")
+    case IO.read(:stdio, :eof) do
+      :eof ->
+        IO.puts(:stderr, "No input received on stdin")
+        System.halt(1)
+      "" ->
+        IO.puts(:stderr, "Empty input received on stdin")
+        System.halt(1)
+      content when is_binary(content) ->
+        output_json(content, "stdin")
+    end
   end
 
   def run(_), do: IO.puts(:stderr, "Usage: mix colorize <file> | mix colorize --stdin")
