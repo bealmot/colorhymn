@@ -1,0 +1,23 @@
+#!/bin/bash
+# Colorhymn quick viewer - pipe-friendly
+# Usage: chymn <logfile>
+#        cat log | chymn --stdin
+#        chymn <logfile> | less -R
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COLORHYMN_DIR="$(dirname "$SCRIPT_DIR")"
+
+if [ "$1" = "--stdin" ]; then
+    # Read stdin to temp file
+    TMPFILE=$(mktemp)
+    cat > "$TMPFILE"
+    python3 "$SCRIPT_DIR/colorhymn_rich.py" "$TMPFILE"
+    rm "$TMPFILE"
+elif [ -n "$1" ]; then
+    python3 "$SCRIPT_DIR/colorhymn_rich.py" "$1"
+else
+    echo "Usage: chymn <logfile>" >&2
+    echo "       cat log | chymn --stdin" >&2
+    echo "       chymn log | less -R" >&2
+    exit 1
+fi

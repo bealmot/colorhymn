@@ -31,11 +31,14 @@ defmodule Colorhymn.FirstSight do
     sample = Enum.take(lines, 50)
     timestamps = extract_timestamps(lines)
 
+    {temperature, temperature_score} = detect_temperature(lines)
+
     %{
       type: detect_type(filename, sample, content),
       format: detect_format(sample),
       perception: Perception.perceive(content, lines, timestamps),
-      temperature: detect_temperature(lines),
+      temperature: temperature,
+      temperature_score: temperature_score,  # Continuous 0.0 (cool) → 1.0 (critical)
       confidence: 0.8  # TODO: calculate based on signal strength
     }
   end
@@ -427,7 +430,10 @@ defmodule Colorhymn.FirstSight do
 
   defp detect_temperature(lines) do
     total = length(lines)
-    return_if_empty(total, :unknown, fn ->
+
+    if total == 0 do
+      {:unknown, 0.5}
+    else
       # Use weighted scoring - log level indicators count more than mentions
       error_score = score_error_signals(lines)
       warning_score = score_warning_signals(lines)
@@ -438,19 +444,50 @@ defmodule Colorhymn.FirstSight do
       warning_ratio = warning_score / total
       success_ratio = success_score / total
 
-      cond do
-        error_ratio > 0.1 -> :critical     # Heavy error presence
-        error_ratio > 0.02 -> :troubled    # Notable errors
-        warning_ratio > 0.2 -> :troubled   # Many warnings
-        success_ratio > 0.5 -> :calm       # Mostly success
-        error_ratio > 0 -> :uneasy         # Some errors present
+      # Calculate continuous temperature score (0.0 = cool, 1.0 = hot)
+      #
+      # We want a gradual curve where:
+      #   0% errors, high success → ~0.15 (calm)
+      #   0% errors, neutral → ~0.35 (neutral)
+      #   2-5% errors → ~0.45-0.55 (uneasy)
+      #   5-15% errors → ~0.55-0.70 (troubled)
+      #   15%+ errors → ~0.70-0.90 (critical)
+      #
+      # Using a piecewise linear approach for more control
+
+      base_temp = cond do
+        # Heavy success pushes toward calm
+        success_ratio > 0.5 and error_ratio == 0 -> 0.15 + (1 - success_ratio) * 0.3
+        # No errors, no strong success = neutral
+        error_ratio == 0 and warning_ratio < 0.1 -> 0.35
+        # Warnings only push slightly warm
+        error_ratio == 0 -> 0.35 + min(warning_ratio * 1.5, 0.2)
+        # Errors drive the temperature
+        true -> 0.35 + error_ratio * 4.0  # Linear scaling, capped by clamp
+      end
+
+      # Warnings add heat on top of base
+      warning_heat = if error_ratio > 0, do: warning_ratio * 0.5, else: 0
+
+      # Success cools things down slightly
+      cooling = success_ratio * 0.15
+
+      temperature_score = clamp(base_temp + warning_heat - cooling, 0.0, 0.95)
+
+      # Also derive discrete bucket for backward compatibility
+      temperature = cond do
+        temperature_score > 0.8 -> :critical
+        temperature_score > 0.6 -> :troubled
+        temperature_score > 0.45 -> :uneasy
+        temperature_score < 0.3 -> :calm
         true -> :neutral
       end
-    end)
+
+      {temperature, Float.round(temperature_score, 3)}
+    end
   end
 
-  defp return_if_empty(0, default, _fun), do: default
-  defp return_if_empty(_, _default, fun), do: fun.()
+  defp clamp(val, min_v, max_v), do: val |> max(min_v) |> min(max_v)
 
   # ============================================================================
   # Weighted Signal Scoring

@@ -7,7 +7,7 @@ defmodule Colorhymn.Expression do
   be exported in various formats (hex, HSL, ANSI, CSS).
   """
 
-  alias Colorhymn.Expression.{Color, Palette}
+  alias Colorhymn.Expression.{Color, Palette, Dither}
   alias Colorhymn.Perception
   alias Colorhymn.Tokenizer
   alias Colorhymn.Tokenizer.Token
@@ -21,20 +21,57 @@ defmodule Colorhymn.Expression do
 
   Takes the output of `FirstSight.perceive/2` and returns a palette
   with all semantic colors modulated by the perception dimensions.
+
+  Options:
+    - tint: Hue offset in degrees (-180 to 180) to shift the entire palette
+    - sat: Saturation multiplier (0.5 = muted, 1.5 = vivid)
+    - contrast: Contrast multiplier (0.5 = flat, 1.5 = punchy)
   """
-  def from_perception(%{temperature: temperature, perception: perception}) do
-    mood = temperature_to_mood(temperature)
+  def from_perception(sight, opts \\ [])
+
+  def from_perception(%{temperature: temperature, perception: perception} = sight, opts) do
+    # Use continuous temperature_score if available, otherwise fall back to discrete
+    temperature_score = Map.get(sight, :temperature_score, temperature_to_default_score(temperature))
     perception_map = perception_to_map(perception)
 
-    Palette.generate(mood, perception_map)
+    # Apply style modifiers if provided
+    perception_map = perception_map
+    |> maybe_put(:hue_offset, Keyword.get(opts, :tint))
+    |> maybe_put(:sat_mult, Keyword.get(opts, :sat))
+    |> maybe_put(:contrast_mult, Keyword.get(opts, :contrast))
+
+    Palette.generate(temperature_score, perception_map)
   end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, 1.0), do: map  # Skip default values
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  # Fallback scores for discrete temperatures (backward compatibility)
+  defp temperature_to_default_score(:calm), do: 0.15
+  defp temperature_to_default_score(:cool), do: 0.2
+  defp temperature_to_default_score(:normal), do: 0.4
+  defp temperature_to_default_score(:neutral), do: 0.4
+  defp temperature_to_default_score(:elevated), do: 0.55
+  defp temperature_to_default_score(:uneasy), do: 0.55
+  defp temperature_to_default_score(:warm), do: 0.7
+  defp temperature_to_default_score(:troubled), do: 0.7
+  defp temperature_to_default_score(:critical), do: 0.9
+  defp temperature_to_default_score(_), do: 0.4
 
   @doc """
   Quick palette generation from just a mood.
   Useful for testing or when you want a specific feel.
   """
   def from_mood(mood) when mood in [:calm, :neutral, :uneasy, :troubled, :critical] do
-    Palette.generate(mood, %{})
+    Palette.generate(temperature_to_default_score(mood), %{})
+  end
+
+  @doc """
+  Quick palette generation from a temperature score (0.0 to 1.0).
+  """
+  def from_temperature(score) when is_number(score) do
+    Palette.generate(score, %{})
   end
 
   @doc """
@@ -103,17 +140,6 @@ defmodule Colorhymn.Expression do
     |> Map.new()
   end
 
-  # ============================================================================
-  # Temperature → Mood Mapping
-  # ============================================================================
-
-  defp temperature_to_mood(:cool), do: :calm
-  defp temperature_to_mood(:normal), do: :neutral
-  defp temperature_to_mood(:elevated), do: :uneasy
-  defp temperature_to_mood(:warm), do: :troubled
-  defp temperature_to_mood(:troubled), do: :troubled
-  defp temperature_to_mood(:critical), do: :critical
-  defp temperature_to_mood(_), do: :neutral
 
   # ============================================================================
   # Perception Struct → Map
@@ -188,6 +214,90 @@ defmodule Colorhymn.Expression do
     end)
   end
 
+  # ============================================================================
+  # Dithered Rendering (organic color flow)
+  # ============================================================================
+
+  @doc """
+  Render a line with error-diffusion dithering for organic color flow.
+  Returns {rendered_string, new_dither_state}.
+
+  Pass the dither state between lines to create inter-line flow.
+  """
+  def render_line_dithered(palette, line, dither_state \\ nil) do
+    dither = dither_state || Dither.new()
+    tokens = Tokenizer.tokenize(line)
+
+    {rendered_tokens, final_dither} =
+      Enum.map_reduce(tokens, dither, fn %Token{type: type, value: value}, acc_dither ->
+        palette_key = token_to_palette_key(type)
+        ideal_color = Palette.color_for(palette, palette_key)
+
+        {dithered_color, new_dither} = Dither.dither(acc_dither, ideal_color, value)
+
+        rendered = "#{Color.to_ansi_fg(dithered_color)}#{value}#{Color.ansi_reset()}"
+        {rendered, new_dither}
+      end)
+
+    # Prepare dither state for next line
+    next_dither = Dither.next_line(final_dither)
+
+    {Enum.join(rendered_tokens), next_dither}
+  end
+
+  @doc """
+  Render a line with dithering, returning structured data.
+  Returns {list_of_tuples, new_dither_state}.
+  """
+  def render_line_data_dithered(palette, line, dither_state \\ nil) do
+    dither = dither_state || Dither.new()
+    tokens = Tokenizer.tokenize(line)
+
+    {data, final_dither} =
+      Enum.map_reduce(tokens, dither, fn %Token{type: type, value: value}, acc_dither ->
+        palette_key = token_to_palette_key(type)
+        ideal_color = Palette.color_for(palette, palette_key)
+
+        {dithered_color, new_dither} = Dither.dither(acc_dither, ideal_color, value)
+
+        {{type, value, Color.to_hex(dithered_color)}, new_dither}
+      end)
+
+    {data, Dither.next_line(final_dither)}
+  end
+
+  @doc """
+  Render multiple lines with dithering, maintaining flow between lines.
+  """
+  def render_lines_dithered(palette, lines, dither_opts \\ []) do
+    initial_dither = Dither.new(dither_opts)
+
+    {rendered_lines, _final_dither} =
+      Enum.map_reduce(lines, initial_dither, fn line, dither ->
+        render_line_dithered(palette, line, dither)
+      end)
+
+    rendered_lines
+  end
+
+  @doc """
+  Render multiple lines with dithering, returning structured data.
+  """
+  def render_lines_data_dithered(palette, lines, dither_opts \\ []) do
+    initial_dither = Dither.new(dither_opts)
+
+    {data_lines, _final_dither} =
+      Enum.map_reduce(lines, initial_dither, fn line, dither ->
+        render_line_data_dithered(palette, line, dither)
+      end)
+
+    data_lines
+  end
+
+  # ============================================================================
+  # Token Rendering Helpers
+  # ============================================================================
+
   defp render_token_ansi(palette, %Token{type: type, value: value}) do
     palette_key = token_to_palette_key(type)
     color = Palette.color_for(palette, palette_key)
@@ -200,27 +310,28 @@ defmodule Colorhymn.Expression do
     "<span class=\"token-#{type}\" style=\"color: #{Color.to_hex(color)}\">#{html_escape(value)}</span>"
   end
 
+  @doc false
   # Map tokenizer types to palette keys
-  defp token_to_palette_key(:timestamp), do: :timestamp
-  defp token_to_palette_key(:ip_address), do: :ip_address
-  defp token_to_palette_key(:ipv6_address), do: :ip_address
-  defp token_to_palette_key(:domain), do: :domain
-  defp token_to_palette_key(:url), do: :domain
-  defp token_to_palette_key(:path), do: :path
-  defp token_to_palette_key(:uuid), do: :uuid
-  defp token_to_palette_key(:mac_address), do: :identifier
-  defp token_to_palette_key(:email), do: :domain
-  defp token_to_palette_key(:number), do: :number
-  defp token_to_palette_key(:hex_number), do: :number
-  defp token_to_palette_key(:port), do: :number
-  defp token_to_palette_key(:string), do: :string
-  defp token_to_palette_key(:keyword), do: :keyword
-  defp token_to_palette_key(:log_level), do: :log_level
-  defp token_to_palette_key(:identifier), do: :identifier
-  defp token_to_palette_key(:operator), do: :operator
-  defp token_to_palette_key(:bracket), do: :bracket
-  defp token_to_palette_key(:key), do: :keyword
-  defp token_to_palette_key(:equals), do: :operator
-  defp token_to_palette_key(:text), do: :foreground
-  defp token_to_palette_key(_), do: :foreground
+  def token_to_palette_key(:timestamp), do: :timestamp
+  def token_to_palette_key(:ip_address), do: :ip_address
+  def token_to_palette_key(:ipv6_address), do: :ip_address
+  def token_to_palette_key(:domain), do: :domain
+  def token_to_palette_key(:url), do: :domain
+  def token_to_palette_key(:path), do: :path
+  def token_to_palette_key(:uuid), do: :uuid
+  def token_to_palette_key(:mac_address), do: :identifier
+  def token_to_palette_key(:email), do: :domain
+  def token_to_palette_key(:number), do: :number
+  def token_to_palette_key(:hex_number), do: :number
+  def token_to_palette_key(:port), do: :number
+  def token_to_palette_key(:string), do: :string
+  def token_to_palette_key(:keyword), do: :keyword
+  def token_to_palette_key(:log_level), do: :log_level
+  def token_to_palette_key(:identifier), do: :identifier
+  def token_to_palette_key(:operator), do: :operator
+  def token_to_palette_key(:bracket), do: :bracket
+  def token_to_palette_key(:key), do: :keyword
+  def token_to_palette_key(:equals), do: :operator
+  def token_to_palette_key(:text), do: :foreground
+  def token_to_palette_key(_), do: :foreground
 end
