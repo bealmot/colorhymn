@@ -28,3 +28,35 @@ colorhymn-*.tar
 # Log files (prevent accidental commits)
 *.log
 
+# Python
+viewer/.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.*.sw?
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+*.local
+
+# Test sample files
+*.sample.log
+test_*.log

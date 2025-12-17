@@ -1,22 +1,38 @@
 #!/bin/bash
-# Colorhymn quick viewer - pipe-friendly
-# Usage: chymn <logfile>
+# Colorhymn viewer - pipe-friendly
+# Usage: chymn <logfile>           # Rich viewer (simple)
+#        chymn --tui <logfile>     # Textual TUI (interactive)
 #        cat log | chymn --stdin
 #        chymn <logfile> | less -R
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COLORHYMN_DIR="$(dirname "$SCRIPT_DIR")"
 
-if [ "$1" = "--stdin" ]; then
-    # Read stdin to temp file
+# Use venv python if available
+if [ -f "$SCRIPT_DIR/.venv/bin/python" ]; then
+    PYTHON="$SCRIPT_DIR/.venv/bin/python"
+else
+    PYTHON="python3"
+fi
+
+if [ "$1" = "--tui" ]; then
+    shift
+    if [ -n "$1" ]; then
+        exec "$PYTHON" "$SCRIPT_DIR/colorhymn_viewer.py" "$1"
+    else
+        echo "Usage: chymn --tui <logfile>" >&2
+        exit 1
+    fi
+elif [ "$1" = "--stdin" ]; then
     TMPFILE=$(mktemp)
     cat > "$TMPFILE"
-    python3 "$SCRIPT_DIR/colorhymn_rich.py" "$TMPFILE"
+    "$PYTHON" "$SCRIPT_DIR/colorhymn_rich.py" "$TMPFILE"
     rm "$TMPFILE"
 elif [ -n "$1" ]; then
-    python3 "$SCRIPT_DIR/colorhymn_rich.py" "$1"
+    "$PYTHON" "$SCRIPT_DIR/colorhymn_rich.py" "$1"
 else
-    echo "Usage: chymn <logfile>" >&2
+    echo "Usage: chymn <logfile>           # Rich viewer" >&2
+    echo "       chymn --tui <logfile>     # Textual TUI" >&2
     echo "       cat log | chymn --stdin" >&2
     echo "       chymn log | less -R" >&2
     exit 1
