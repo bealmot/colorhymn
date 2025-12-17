@@ -81,19 +81,45 @@ defmodule Colorhymn.Perception do
   alias Colorhymn.Perception.{Temporal, Structural, Density, Repetition,
                                Dialogue, Volatility, Complexity, Network}
 
+  # Sample size for large files
+  @max_sample_lines 500
+
   @doc """
   Analyze content and produce a full multi-dimensional perception.
   """
   def perceive(content, lines, timestamps) do
+    # For large files, sample lines for perception analysis
+    sampled_lines = sample_lines(lines, @max_sample_lines)
+    sampled_content = if length(lines) > @max_sample_lines do
+      Enum.join(sampled_lines, "\n")
+    else
+      content
+    end
+
     %__MODULE__{}
-    |> merge(Temporal.analyze(timestamps, lines))
-    |> merge(Structural.analyze(lines))
-    |> merge(Density.analyze(lines, content))
-    |> merge(Repetition.analyze(lines))
-    |> merge(Dialogue.analyze(lines))
-    |> merge(Volatility.analyze(lines))
-    |> merge(Complexity.analyze(lines, content))
-    |> merge(Network.analyze(lines, content))
+    |> merge(Temporal.analyze(timestamps, sampled_lines))
+    |> merge(Structural.analyze(sampled_lines))
+    |> merge(Density.analyze(sampled_lines, sampled_content))
+    |> merge(Repetition.analyze(sampled_lines))
+    |> merge(Dialogue.analyze(sampled_lines))
+    |> merge(Volatility.analyze(sampled_lines))
+    |> merge(Complexity.analyze(sampled_lines, sampled_content))
+    |> merge(Network.analyze(sampled_lines, sampled_content))
+  end
+
+  # Sample lines uniformly from the file
+  defp sample_lines(lines, max) when length(lines) <= max, do: lines
+  defp sample_lines(lines, max) do
+    total = length(lines)
+    # Take from start, middle, and end to get representative sample
+    chunk_size = div(max, 3)
+
+    start_chunk = Enum.take(lines, chunk_size)
+    middle_start = div(total, 2) - div(chunk_size, 2)
+    middle_chunk = lines |> Enum.drop(middle_start) |> Enum.take(chunk_size)
+    end_chunk = lines |> Enum.take(-chunk_size)
+
+    start_chunk ++ middle_chunk ++ end_chunk
   end
 
   defp merge(perception, dimension_map) do

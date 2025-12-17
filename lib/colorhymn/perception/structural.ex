@@ -79,42 +79,39 @@ defmodule Colorhymn.Perception.Structural do
   end
 
   defp line_nesting_depth(line) do
-    # Count bracket depth
-    openers = ~r/[\[{(]/
-    closers = ~r/[\]})]/
-
-    chars = String.graphemes(line)
-
-    {max_depth, _} = Enum.reduce(chars, {0, 0}, fn char, {max_d, current_d} ->
-      cond do
-        Regex.match?(openers, char) ->
-          new_d = current_d + 1
-          {max(max_d, new_d), new_d}
-        Regex.match?(closers, char) ->
-          {max_d, max(0, current_d - 1)}
-        true ->
-          {max_d, current_d}
-      end
-    end)
-
-    max_depth
+    # Count bracket depth using binary traversal (much faster than graphemes)
+    scan_depth(line, 0, 0)
   end
 
+  defp scan_depth(<<c, rest::binary>>, max_d, cur) when c in [?[, ?{, ?(] do
+    new = cur + 1
+    scan_depth(rest, max(max_d, new), new)
+  end
+  defp scan_depth(<<c, rest::binary>>, max_d, cur) when c in [?], ?}, ?)] do
+    scan_depth(rest, max_d, max(0, cur - 1))
+  end
+  defp scan_depth(<<_, rest::binary>>, max_d, cur), do: scan_depth(rest, max_d, cur)
+  defp scan_depth(<<>>, max_d, _), do: max_d
+
   defp compute_whitespace_ratio(lines) do
-    total_chars = lines |> Enum.map(&String.length/1) |> Enum.sum()
+    total_chars = lines |> Enum.map(&byte_size/1) |> Enum.sum()
 
     if total_chars == 0 do
       0.5
     else
       whitespace_chars = lines
-      |> Enum.map(fn line ->
-        line |> String.graphemes() |> Enum.count(&(&1 =~ ~r/\s/))
-      end)
+      |> Enum.map(&count_whitespace/1)
       |> Enum.sum()
 
       clamp(whitespace_chars / total_chars, 0.0, 1.0)
     end
   end
+
+  defp count_whitespace(<<c, rest::binary>>) when c in [?\s, ?\t, ?\n, ?\r] do
+    1 + count_whitespace(rest)
+  end
+  defp count_whitespace(<<_, rest::binary>>), do: count_whitespace(rest)
+  defp count_whitespace(<<>>), do: 0
 
   defp compute_block_regularity(lines) do
     # Detect if there are clear "blocks" separated by blank-ish lines or patterns

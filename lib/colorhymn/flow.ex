@@ -9,7 +9,16 @@ defmodule Colorhymn.Flow do
 
   Uses sampling for efficiency: doesn't read every line, just samples
   within each window to estimate local temperature.
+
+  ## Region-Aware Analysis
+
+  The `analyze_with_regions/2` function provides per-region temperature
+  calculation, where each structural region (timestamp, log_level, message, etc.)
+  gets its own temperature based on its semantic content.
   """
+
+  alias Colorhymn.Structure
+  alias Colorhymn.RegionTemperature
 
   # Window radius - look at N lines before and after current position
   @default_window_radius 20
@@ -67,6 +76,114 @@ defmodule Colorhymn.Flow do
     lines
     |> analyze(opts)
     |> Enum.map(fn {score, _temp} -> score end)
+  end
+
+  # ============================================================================
+  # Region-Aware Analysis
+  # ============================================================================
+
+  @doc """
+  Analyze with structural region detection and per-region temperatures.
+
+  Returns a list of maps, one per line, containing:
+    - `:line` - the original line text
+    - `:line_temp` - overall line temperature {score, atom}
+    - `:regions` - list of Region structs
+    - `:region_temps` - map of region_type => temperature score
+    - `:group` - group information if part of multi-line group
+
+  Options:
+    - Same as `analyze/2` plus:
+    - `:include_groups` - include multi-line group detection (default: true)
+  """
+  def analyze_with_regions(lines, opts \\ []) when is_list(lines) do
+    include_groups = Keyword.get(opts, :include_groups, true)
+
+    # Get windowed line temperatures
+    line_temps = analyze(lines, opts)
+
+    # Analyze structure (regions and groups)
+    groups = if include_groups, do: Structure.analyze(lines), else: nil
+
+    # Initialize temporal context for timestamp temperature tracking
+    initial_context = RegionTemperature.init_context()
+
+    # Process each line with region temperatures
+    {results, _final_context} =
+      lines
+      |> Enum.with_index()
+      |> Enum.map_reduce(initial_context, fn {line, idx}, temp_ctx ->
+        # Get regions for this line
+        regions = Structure.analyze_line(line)
+
+        # Calculate per-region temperatures
+        {region_temps, new_ctx} = RegionTemperature.calculate_line(regions, temp_ctx)
+
+        # Get overall line temperature from windowed analysis
+        {line_score, _line_temp} = Enum.at(line_temps, idx)
+
+        # Blend region temps with windowed score for final line score
+        blended_score = blend_with_regions(line_score, region_temps)
+        blended_temp = score_to_temperature(blended_score)
+
+        # Find group info if applicable
+        group_info = if groups, do: find_group_for_line(groups, idx), else: nil
+
+        result = %{
+          line: line,
+          line_num: idx,
+          line_temp: {blended_score, blended_temp},
+          regions: regions,
+          region_temps: region_temps,
+          group: group_info
+        }
+
+        {result, new_ctx}
+      end)
+
+    results
+  end
+
+  @doc """
+  Analyze with regions but return simplified output (just temps and regions).
+  """
+  def analyze_regions_simple(lines, opts \\ []) do
+    lines
+    |> analyze_with_regions(opts)
+    |> Enum.map(fn result ->
+      %{
+        temp: result.line_temp,
+        region_temps: result.region_temps,
+        regions: Enum.map(result.regions, &{&1.type, &1.value})
+      }
+    end)
+  end
+
+  # Blend windowed line temperature with region-specific temperatures
+  defp blend_with_regions(line_score, region_temps) when map_size(region_temps) == 0 do
+    line_score
+  end
+
+  defp blend_with_regions(line_score, region_temps) do
+    region_blend = RegionTemperature.blend_region_temps(region_temps)
+
+    # 60% windowed context, 40% region-specific
+    line_score * 0.6 + region_blend * 0.4
+  end
+
+  defp find_group_for_line(groups, line_idx) do
+    case Enum.find(groups, fn g -> line_idx >= g.start_line and line_idx <= g.end_line end) do
+      nil ->
+        nil
+
+      group ->
+        %{
+          type: group.type,
+          start_line: group.start_line,
+          end_line: group.end_line,
+          line_count: length(group.lines)
+        }
+    end
   end
 
   # ============================================================================

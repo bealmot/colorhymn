@@ -85,7 +85,7 @@ defmodule Colorhymn.Structure.RegionDetector do
     end
   end
 
-  defp maybe_include_surrounding_brackets(%Token{} = token, tokens, line) do
+  defp maybe_include_surrounding_brackets(%Token{} = token, tokens, _line) do
     # Look for bracket immediately before
     prev_bracket =
       tokens

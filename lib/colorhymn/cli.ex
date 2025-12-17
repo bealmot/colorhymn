@@ -12,6 +12,7 @@ defmodule Colorhymn.CLI do
     --format=html    Output HTML with inline styles
     --dither         Enable organic color dithering
     --flow           Enable flowing temperature (colors shift through log)
+    --regions        Enable per-region temperature analysis (with --flow)
     --theme=NAME     Color theme (default: rainbow)
                      Options: rainbow, monochrome, temp-lock-warm,
                      temp-lock-cool, terminal, high-contrast, semantic
@@ -30,6 +31,7 @@ defmodule Colorhymn.CLI do
     format: :ansi,
     dither: false,
     flow: false,
+    regions: false,
     theme: :rainbow,
     intensity: 1.0,
     tint: 0.0,
@@ -74,6 +76,10 @@ defmodule Colorhymn.CLI do
 
   defp parse_args(["--flow" | rest], opts, files) do
     parse_args(rest, Map.put(opts, :flow, true), files)
+  end
+
+  defp parse_args(["--regions" | rest], opts, files) do
+    parse_args(rest, Map.put(opts, :regions, true), files)
   end
 
   defp parse_args(["--theme=" <> name | rest], opts, files) do
@@ -157,13 +163,24 @@ defmodule Colorhymn.CLI do
 
     # In flow mode, calculate per-line temperature; otherwise single palette
     if opts.flow do
-      # Get temperature flow (list of {score, temp_atom} per line)
-      flow_data = Flow.analyze(lines)
+      if opts.regions do
+        # Get full region-aware analysis
+        region_data = Flow.analyze_with_regions(lines)
 
-      case opts.format do
-        :ansi -> output_ansi_flow(lines, flow_data, sight, filename, opts)
-        :json -> output_json_flow(lines, flow_data, sight, filename, opts)
-        :html -> output_html_flow(lines, flow_data, sight, filename, opts)
+        case opts.format do
+          :ansi -> output_ansi_regions(lines, region_data, sight, filename, opts)
+          :json -> output_json_regions(lines, region_data, sight, filename, opts)
+          :html -> output_html_regions(lines, region_data, sight, filename, opts)
+        end
+      else
+        # Get temperature flow (list of {score, temp_atom} per line)
+        flow_data = Flow.analyze(lines)
+
+        case opts.format do
+          :ansi -> output_ansi_flow(lines, flow_data, sight, filename, opts)
+          :json -> output_json_flow(lines, flow_data, sight, filename, opts)
+          :html -> output_html_flow(lines, flow_data, sight, filename, opts)
+        end
       end
     else
       palette = Expression.from_perception(sight,
@@ -488,6 +505,171 @@ defmodule Colorhymn.CLI do
       score > 0.25 -> "#44cccc"
       true -> "#4488ff"
     end
+  end
+
+  # ============================================================================
+  # Region-Aware Output (per-region temperatures)
+  # ============================================================================
+
+  defp output_ansi_regions(_lines, region_data, sight, filename, opts) do
+    # Header shows region mode
+    IO.puts("\e[2m─── \e[0m\e[1m#{filename}\e[0m\e[2m │ \e[0m\e[95m◆ flow+regions\e[0m\e[2m │ #{sight.temperature} ───\e[0m\n")
+
+    alias Colorhymn.Expression.Dither
+
+    dither_opts = [intensity: opts.intensity, decay: 0.7, content_influence: 0.4]
+    dither = if opts.dither, do: Dither.new(dither_opts), else: nil
+
+    {rendered, _} = Enum.map_reduce(region_data, dither, fn data, dither_state ->
+      {score, _temp} = data.line_temp
+      palette = palette_for_score(score, sight, opts)
+      line = data.line
+
+      if dither_state do
+        tokens = Colorhymn.Tokenizer.tokenize(line)
+        {parts, new_dither} = Enum.map_reduce(tokens, dither_state, fn %{type: type, value: value}, acc ->
+          palette_key = Expression.token_to_palette_key(type)
+          ideal = Expression.Palette.color_for(palette, palette_key)
+          {dithered, new_acc} = Dither.dither(acc, ideal, value)
+          {r, g, b} = Color.to_rgb(dithered)
+          {"\e[38;2;#{r};#{g};#{b}m#{value}\e[0m", new_acc}
+        end)
+        {Enum.join(parts), Dither.next_line(new_dither)}
+      else
+        {render_line_ansi(line, palette), nil}
+      end
+    end)
+
+    # Output with line numbers and region temperature indicators
+    rendered
+    |> Enum.zip(region_data)
+    |> Enum.with_index(1)
+    |> Enum.each(fn {{line, data}, num} ->
+      if opts.line_nums do
+        {score, _temp} = data.line_temp
+        temp_char = temp_indicator(score)
+
+        # Show region temps in a compact format
+        region_info = format_region_temps(data.region_temps)
+        IO.puts("\e[2m#{String.pad_leading("#{num}", 4)}\e[0m #{temp_char} #{line}\e[2m#{region_info}\e[0m")
+      else
+        IO.puts(line)
+      end
+    end)
+  end
+
+  defp format_region_temps(region_temps) when map_size(region_temps) == 0, do: ""
+  defp format_region_temps(region_temps) do
+    parts = region_temps
+    |> Enum.map(fn {type, temp} ->
+      short_type = case type do
+        :timestamp -> "ts"
+        :log_level -> "lv"
+        :message -> "msg"
+        :key_value -> "kv"
+        :component -> "cmp"
+        :bracket -> "br"
+        _ -> "?"
+      end
+      "#{short_type}:#{Float.round(temp, 2)}"
+    end)
+    |> Enum.join(" ")
+
+    " [#{parts}]"
+  end
+
+  defp output_json_regions(_lines, region_data, _sight, filename, opts) do
+    json_lines = Enum.map(region_data, fn data ->
+      {score, temp_atom} = data.line_temp
+
+      # Format regions
+      regions_json = data.regions
+      |> Enum.map(fn r ->
+        ~s({"type":"#{r.type}","start":#{r.start},"length":#{r.length},"value":"#{escape_json(r.value)}"})
+      end)
+      |> Enum.join(",")
+
+      # Format region temps
+      region_temps_json = data.region_temps
+      |> Enum.map(fn {k, v} -> ~s("#{k}":#{Float.round(v, 3)}) end)
+      |> Enum.join(",")
+
+      # Format group info
+      group_json = case data.group do
+        nil -> "null"
+        g -> ~s({"type":"#{g.type}","start":#{g.start_line},"end":#{g.end_line},"lines":#{g.line_count}})
+      end
+
+      ~s({"line_num":#{data.line_num},"temp":#{Float.round(score, 3)},"temp_atom":"#{temp_atom}","region_temps":{#{region_temps_json}},"regions":[#{regions_json}],"group":#{group_json}})
+    end)
+
+    IO.puts(~s({
+"metadata":{"filename":"#{escape_json(filename)}","flow":true,"regions":true,"line_count":#{length(region_data)},"dithered":#{opts.dither}},
+"lines":[#{Enum.join(json_lines, ",")}]
+}))
+  end
+
+  defp output_html_regions(_lines, region_data, sight, filename, opts) do
+    base_palette = palette_for_score(0.5, sight, opts)
+    bg = Color.to_hex(base_palette.background)
+    fg = Color.to_hex(base_palette.foreground)
+
+    IO.puts("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>#{html_escape(filename)} - Colorhymn Regions</title>
+      <style>
+        body { background: #{bg}; color: #{fg}; font-family: monospace; padding: 20px; margin: 0; }
+        .line { white-space: pre; line-height: 1.4; }
+        .line-num { color: #666; user-select: none; display: inline-block; width: 4em; text-align: right; margin-right: 0.5em; }
+        .temp { display: inline-block; width: 1em; margin-right: 0.5em; }
+        .region-temps { color: #666; font-size: 0.8em; margin-left: 1em; }
+        .meta { color: #888; margin-bottom: 1em; border-bottom: 1px solid #444; padding-bottom: 0.5em; }
+        .group-start { border-left: 2px solid #666; padding-left: 0.5em; }
+      </style>
+    </head>
+    <body>
+      <div class="meta">#{html_escape(filename)} │ ◆ flow+regions</div>
+    """)
+
+    region_data
+    |> Enum.with_index(1)
+    |> Enum.each(fn {data, num} ->
+      {score, _temp} = data.line_temp
+      palette = palette_for_score(score, sight, opts)
+      tokens = Expression.render_line_data(palette, data.line)
+
+      line_num = if opts.line_nums, do: ~s(<span class="line-num">#{num}</span>), else: ""
+      temp_color = temp_to_html_color(score)
+      temp_span = ~s(<span class="temp" style="color:#{temp_color}">●</span>)
+
+      # Group styling
+      group_class = case data.group do
+        %{type: type, start_line: start} when start == data.line_num and type != :single ->
+          " group-start"
+        _ -> ""
+      end
+
+      spans = Enum.map(tokens, fn {_type, value, hex} ->
+        ~s(<span style="color:#{hex}">#{html_escape(value)}</span>)
+      end)
+
+      # Region temps tooltip
+      region_info = if map_size(data.region_temps) > 0 do
+        temps = data.region_temps
+        |> Enum.map(fn {k, v} -> "#{k}:#{Float.round(v, 2)}" end)
+        |> Enum.join(" ")
+        ~s(<span class="region-temps">[#{temps}]</span>)
+      else
+        ""
+      end
+
+      IO.puts(~s(  <div class="line#{group_class}">#{line_num}#{temp_span}#{Enum.join(spans)}#{region_info}</div>))
+    end)
+
+    IO.puts("</body>\n</html>")
   end
 
   # ============================================================================

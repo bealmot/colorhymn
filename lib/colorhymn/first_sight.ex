@@ -428,21 +428,32 @@ defmodule Colorhymn.FirstSight do
   # Temperature Detection - Context-aware mood/severity sensing
   # ============================================================================
 
+  # Sample size for temperature detection
+  @temp_sample_size 500
+
   defp detect_temperature(lines) do
     total = length(lines)
 
     if total == 0 do
       {:unknown, 0.5}
     else
-      # Use weighted scoring - log level indicators count more than mentions
-      error_score = score_error_signals(lines)
-      warning_score = score_warning_signals(lines)
-      success_score = score_success_signals(lines)
+      # Sample for large files to improve performance
+      sampled = if total > @temp_sample_size do
+        sample_for_temperature(lines, @temp_sample_size)
+      else
+        lines
+      end
+      sample_total = length(sampled)
 
-      # Normalize by line count
-      error_ratio = error_score / total
-      warning_ratio = warning_score / total
-      success_ratio = success_score / total
+      # Use weighted scoring - log level indicators count more than mentions
+      error_score = score_error_signals(sampled)
+      warning_score = score_warning_signals(sampled)
+      success_score = score_success_signals(sampled)
+
+      # Normalize by sampled line count
+      error_ratio = error_score / sample_total
+      warning_ratio = warning_score / sample_total
+      success_ratio = success_score / sample_total
 
       # Calculate continuous temperature score (0.0 = cool, 1.0 = hot)
       #
@@ -488,6 +499,19 @@ defmodule Colorhymn.FirstSight do
   end
 
   defp clamp(val, min_v, max_v), do: val |> max(min_v) |> min(max_v)
+
+  # Sample from start, middle, and end for representative coverage
+  defp sample_for_temperature(lines, size) do
+    total = length(lines)
+    chunk = div(size, 3)
+
+    start_chunk = Enum.take(lines, chunk)
+    middle_start = div(total, 2) - div(chunk, 2)
+    middle_chunk = lines |> Enum.drop(middle_start) |> Enum.take(chunk)
+    end_chunk = Enum.take(lines, -chunk)
+
+    start_chunk ++ middle_chunk ++ end_chunk
+  end
 
   # ============================================================================
   # Weighted Signal Scoring
