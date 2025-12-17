@@ -169,13 +169,17 @@ defmodule Colorhymn.Tokenizer do
   # ============================================================================
 
   defp find_all_tokens(line) do
+    # Pre-scan for character presence to enable early bailout
+    # This single pass is faster than running 20+ regex patterns that can't match
+    flags = scan_char_flags(line)
+
     # Process patterns in priority order
     # Use prepending (O(1)) instead of appending (O(n))
-    # Order is reversed here since we prepend; final sort handles priority
+    # Skip patterns that can't possibly match based on character flags
     []
     |> prepend_matches(line, @identifier_pattern, :identifier)
     |> prepend_matches(line, @operator_pattern, :operator)
-    |> prepend_matches(line, @bracket_chars, :bracket)
+    |> prepend_if(flags.bracket, line, @bracket_chars, :bracket)
     |> prepend_matches(line, @number_pattern, :number)
     |> prepend_matches(line, @http_status_pattern, :http_status)
     |> prepend_matches(line, @keywords_pattern, :keyword)
@@ -183,26 +187,90 @@ defmodule Colorhymn.Tokenizer do
     |> prepend_matches(line, @interface_pattern, :interface)
     |> prepend_matches(line, @protocol_pattern, :protocol)
     |> prepend_matches(line, @http_method_pattern, :http_method)
-    |> prepend_keys(line)
-    |> prepend_matches(line, @string_pattern, :string)
-    |> prepend_matches(line, @hex_pattern, :hex_number)
-    |> prepend_matches(line, @hresult_pattern, :hresult)
-    |> prepend_spis(line)
-    |> prepend_event_ids(line)
-    |> prepend_matches(line, @sid_pattern, :sid)
-    |> prepend_ports(line)
-    |> prepend_matches(line, @domain_pattern, :domain)
-    |> prepend_matches(line, @registry_pattern, :registry_key)
-    |> prepend_matches(line, @path_pattern, :path)
-    |> prepend_matches(line, @ipv4_pattern, :ip_address)
-    |> prepend_matches(line, @cidr_pattern, :cidr)
-    |> prepend_matches(line, @ipv6_pattern, :ipv6_address)
-    |> prepend_matches(line, @mac_pattern, :mac_address)
-    |> prepend_matches(line, @email_pattern, :email)
-    |> prepend_matches(line, @url_pattern, :url)
-    |> prepend_matches(line, @uuid_pattern, :uuid)
+    |> prepend_if(flags.equals, line, @key_pattern, :key, &prepend_keys/2)
+    |> prepend_if(flags.quote, line, @string_pattern, :string)
+    |> prepend_if(flags.hex_prefix, line, @hex_pattern, :hex_number)
+    |> prepend_if(flags.hex_prefix, line, @hresult_pattern, :hresult)
+    |> prepend_if(flags.has_spi, line, nil, :spi, &prepend_spis/2)
+    |> prepend_if(flags.has_event, line, @event_id_pattern, :event_id, &prepend_event_ids/2)
+    |> prepend_if(flags.hyphen, line, @sid_pattern, :sid)
+    |> prepend_if(flags.colon, line, nil, :port, &prepend_ports/2)
+    |> prepend_if(flags.dot, line, @domain_pattern, :domain)
+    |> prepend_if(flags.backslash, line, @registry_pattern, :registry_key)
+    |> prepend_if(flags.slash or flags.backslash, line, @path_pattern, :path)
+    |> prepend_if(flags.dot, line, @ipv4_pattern, :ip_address)
+    |> prepend_if(flags.dot and flags.slash, line, @cidr_pattern, :cidr)
+    |> prepend_if(flags.colon, line, @ipv6_pattern, :ipv6_address)
+    |> prepend_if(flags.colon or flags.hyphen, line, @mac_pattern, :mac_address)
+    |> prepend_if(flags.at, line, @email_pattern, :email)
+    |> prepend_if(flags.has_http, line, @url_pattern, :url)
+    |> prepend_if(flags.hyphen, line, @uuid_pattern, :uuid)
     |> prepend_matches(line, @log_level_pattern, :log_level)
     |> prepend_timestamps(line)
+  end
+
+  # Fast single-pass character flag scanner
+  # Much faster than multiple String.contains? calls
+  defp scan_char_flags(line) do
+    scan_char_flags(line, %{
+      dot: false, colon: false, hyphen: false, at: false,
+      slash: false, backslash: false, bracket: false, quote: false,
+      equals: false, hex_prefix: false, has_http: false,
+      has_spi: false, has_event: false
+    })
+  end
+
+  defp scan_char_flags(<<>>, flags), do: flags
+  defp scan_char_flags(<<"http", rest::binary>>, flags),
+    do: scan_char_flags(rest, %{flags | has_http: true})
+  defp scan_char_flags(<<"0x", rest::binary>>, flags),
+    do: scan_char_flags(rest, %{flags | hex_prefix: true})
+  defp scan_char_flags(<<"SPI", rest::binary>>, flags),
+    do: scan_char_flags(rest, %{flags | has_spi: true})
+  defp scan_char_flags(<<"spi", rest::binary>>, flags),
+    do: scan_char_flags(rest, %{flags | has_spi: true})
+  defp scan_char_flags(<<"Event", rest::binary>>, flags),
+    do: scan_char_flags(rest, %{flags | has_event: true})
+  defp scan_char_flags(<<"event", rest::binary>>, flags),
+    do: scan_char_flags(rest, %{flags | has_event: true})
+  defp scan_char_flags(<<c, rest::binary>>, flags) do
+    flags = case c do
+      ?. -> %{flags | dot: true}
+      ?: -> %{flags | colon: true}
+      ?- -> %{flags | hyphen: true}
+      ?@ -> %{flags | at: true}
+      ?/ -> %{flags | slash: true}
+      ?\\ -> %{flags | backslash: true}
+      ?[ -> %{flags | bracket: true}
+      ?] -> %{flags | bracket: true}
+      ?{ -> %{flags | bracket: true}
+      ?} -> %{flags | bracket: true}
+      ?( -> %{flags | bracket: true}
+      ?) -> %{flags | bracket: true}
+      ?" -> %{flags | quote: true}
+      ?' -> %{flags | quote: true}
+      ?= -> %{flags | equals: true}
+      _ -> flags
+    end
+    scan_char_flags(rest, flags)
+  end
+
+  # Conditional pattern matching - skip if flag is false
+  # tokens comes first for pipe compatibility
+  defp prepend_if(tokens, condition, line, pattern, type) do
+    if condition do
+      prepend_matches(tokens, line, pattern, type)
+    else
+      tokens
+    end
+  end
+
+  defp prepend_if(tokens, condition, line, _pattern, _type, custom_fn) do
+    if condition do
+      custom_fn.(tokens, line)
+    else
+      tokens
+    end
   end
 
   # Efficient prepending helpers
@@ -273,61 +341,51 @@ defmodule Colorhymn.Tokenizer do
   end
 
   # ============================================================================
-  # Overlap Resolution
+  # Overlap Resolution & Gap Filling (optimized single-pass O(n) algorithm)
   # ============================================================================
 
+  # Old O(n²) algorithm replaced with O(n) linear scan
+  # Tokens are already sorted by start position, so we can:
+  # 1. Track the end position of the last accepted token
+  # 2. Skip any token that starts before that end (overlap)
+  # 3. Fill gaps as we go
   defp resolve_overlaps(tokens) do
-    # First-match-wins: earlier tokens in the sorted list take priority
-    # because they were found by higher-priority patterns
-    Enum.reduce(tokens, [], fn token, acc ->
-      if overlaps_any?(token, acc) do
-        acc
+    # Linear scan: skip tokens that overlap with previously accepted ones
+    {result, _last_end} = Enum.reduce(tokens, {[], -1}, fn token, {acc, last_end} ->
+      if token.start >= last_end do
+        # No overlap - accept this token
+        {[token | acc], Token.end_pos(token)}
       else
-        [token | acc]
+        # Overlaps with previous token - skip it
+        {acc, last_end}
       end
     end)
-    |> Enum.reverse()
+    Enum.reverse(result)
   end
-
-  defp overlaps_any?(token, existing_tokens) do
-    Enum.any?(existing_tokens, fn existing ->
-      overlaps?(token, existing)
-    end)
-  end
-
-  defp overlaps?(t1, t2) do
-    t1_end = Token.end_pos(t1)
-    t2_end = Token.end_pos(t2)
-
-    # Overlaps if ranges intersect
-    t1.start < t2_end and t2.start < t1_end
-  end
-
-  # ============================================================================
-  # Gap Filling
-  # ============================================================================
 
   defp fill_gaps(tokens, line) do
     line_length = byte_size(line)
 
+    # Single pass with prepending (O(1) per operation)
     {result, last_end} = Enum.reduce(tokens, {[], 0}, fn token, {acc, pos} ->
-      # Fill gap before this token
-      gap_tokens = if token.start > pos do
+      # Fill gap before this token if needed
+      acc2 = if token.start > pos do
         gap_text = binary_part(line, pos, token.start - pos)
-        [Token.new(:text, gap_text, pos)]
+        [Token.new(:text, gap_text, pos) | acc]
       else
-        []
+        acc
       end
 
-      {acc ++ gap_tokens ++ [token], Token.end_pos(token)}
+      {[token | acc2], Token.end_pos(token)}
     end)
 
-    # Fill any remaining gap at the end
-    if last_end < line_length do
+    # Fill any remaining gap at the end, then reverse
+    final = if last_end < line_length do
       remaining = binary_part(line, last_end, line_length - last_end)
-      result ++ [Token.new(:text, remaining, last_end)]
+      [Token.new(:text, remaining, last_end) | result]
     else
       result
     end
+    Enum.reverse(final)
   end
 end
