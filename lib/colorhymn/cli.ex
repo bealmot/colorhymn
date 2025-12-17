@@ -286,9 +286,10 @@ defmodule Colorhymn.CLI do
     |> Enum.join(",")
 
     temp_score = Map.get(sight, :temperature_score, 0.5)
+    confidence = Map.get(sight, :confidence, 0.8)
 
     IO.puts(~s({
-"metadata":{"filename":"#{escape_json(filename)}","temperature":"#{sight.temperature}","temperature_score":#{Float.round(temp_score, 3)},"mood":"#{palette.mood}","warmth":#{Float.round(palette.warmth, 3)},"saturation":#{Float.round(palette.saturation, 3)},"line_count":#{length(lines)},"dithered":#{opts.dither}},
+"metadata":{"filename":"#{escape_json(filename)}","temperature":"#{sight.temperature}","temperature_score":#{Float.round(temp_score, 3)},"confidence":#{confidence},"mood":"#{palette.mood}","warmth":#{Float.round(palette.warmth, 3)},"saturation":#{Float.round(palette.saturation, 3)},"line_count":#{length(lines)},"dithered":#{opts.dither}},
 "palette":{#{palette_json}},
 "lines":[#{Enum.join(json_lines, ",")}]
 }))
