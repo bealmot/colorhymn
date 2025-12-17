@@ -71,14 +71,18 @@ defmodule Colorhymn.Tokenizer do
   # HTTP status codes (3 digits, common patterns)
   @http_status_pattern ~r/\b[1-5][0-9]{2}\b/
 
-  # VPN/IPSec keywords
-  @vpn_keywords [
+  # VPN/IPSec keywords - pre-compiled as single alternation pattern
+  @vpn_keywords_list [
     "ipsec", "ikev1", "ikev2", "ike", "isakmp", "l2tp", "openvpn", "wireguard",
     "phase1", "phase2", "sa", "esp", "ah", "tunnel", "transport", "psk",
     "certificate", "dh", "diffie-hellman", "proposal", "policy", "selector",
     "spi", "nonce", "initiator", "responder", "rekey", "lifetime",
     "encryption", "integrity", "prf", "aes", "3des", "sha", "md5", "hmac"
   ]
+  @vpn_keywords_pattern Regex.compile!(
+    "\\b(" <> Enum.join(@vpn_keywords_list, "|") <> ")\\b",
+    [:caseless]
+  )
 
   # SPI (Security Parameter Index) - typically 8 hex digits
   @spi_pattern ~r/\bSPI[=:\s]+(?:0x)?([0-9a-fA-F]{8})\b/i
@@ -107,8 +111,8 @@ defmodule Colorhymn.Tokenizer do
   # Key=value pairs (capture the key part)
   @key_pattern ~r/\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=/
 
-  # Common keywords in logs
-  @keywords [
+  # Common keywords in logs - pre-compiled as single alternation pattern
+  @keywords_list [
     "true", "false", "null", "nil", "none", "yes", "no",
     "success", "failed", "failure", "error", "ok", "err",
     "start", "stop", "begin", "end", "init", "shutdown",
@@ -122,6 +126,10 @@ defmodule Colorhymn.Tokenizer do
     "active", "inactive", "up", "down",
     "timeout", "retry", "retrying"
   ]
+  @keywords_pattern Regex.compile!(
+    "\\b(" <> Enum.join(@keywords_list, "|") <> ")\\b",
+    [:caseless]
+  )
 
   # Brackets and operators
   @bracket_chars ~r/[\[\]{}()]/
@@ -162,228 +170,106 @@ defmodule Colorhymn.Tokenizer do
 
   defp find_all_tokens(line) do
     # Process patterns in priority order
+    # Use prepending (O(1)) instead of appending (O(n))
+    # Order is reversed here since we prepend; final sort handles priority
     []
-    |> find_timestamps(line)
-    |> find_log_levels(line)
-    |> find_uuids(line)
-    |> find_urls(line)
-    |> find_emails(line)
-    |> find_macs(line)
-    |> find_ipv6(line)
-    |> find_cidr(line)           # Before IPv4 (more specific)
-    |> find_ipv4(line)
-    |> find_paths(line)
-    |> find_registry_keys(line)  # Windows registry
-    |> find_domains(line)
-    |> find_ports(line)
-    |> find_sids(line)           # Windows SIDs
-    |> find_event_ids(line)      # Windows Event IDs
-    |> find_spis(line)           # VPN SPIs
-    |> find_hresults(line)       # Windows error codes
-    |> find_hex_numbers(line)
-    |> find_strings(line)
-    |> find_keys(line)
-    |> find_http_methods(line)   # HTTP verbs
-    |> find_protocols(line)      # Network protocols
-    |> find_interfaces(line)     # Network interfaces
-    |> find_vpn_keywords(line)   # VPN terminology
-    |> find_keywords(line)
-    |> find_http_status(line)    # HTTP status (after keywords, before numbers)
-    |> find_numbers(line)
-    |> find_brackets(line)
-    |> find_operators(line)
-    |> find_identifiers(line)
+    |> prepend_matches(line, @identifier_pattern, :identifier)
+    |> prepend_matches(line, @operator_pattern, :operator)
+    |> prepend_matches(line, @bracket_chars, :bracket)
+    |> prepend_matches(line, @number_pattern, :number)
+    |> prepend_matches(line, @http_status_pattern, :http_status)
+    |> prepend_matches(line, @keywords_pattern, :keyword)
+    |> prepend_matches(line, @vpn_keywords_pattern, :vpn_keyword)
+    |> prepend_matches(line, @interface_pattern, :interface)
+    |> prepend_matches(line, @protocol_pattern, :protocol)
+    |> prepend_matches(line, @http_method_pattern, :http_method)
+    |> prepend_keys(line)
+    |> prepend_matches(line, @string_pattern, :string)
+    |> prepend_matches(line, @hex_pattern, :hex_number)
+    |> prepend_matches(line, @hresult_pattern, :hresult)
+    |> prepend_spis(line)
+    |> prepend_event_ids(line)
+    |> prepend_matches(line, @sid_pattern, :sid)
+    |> prepend_ports(line)
+    |> prepend_matches(line, @domain_pattern, :domain)
+    |> prepend_matches(line, @registry_pattern, :registry_key)
+    |> prepend_matches(line, @path_pattern, :path)
+    |> prepend_matches(line, @ipv4_pattern, :ip_address)
+    |> prepend_matches(line, @cidr_pattern, :cidr)
+    |> prepend_matches(line, @ipv6_pattern, :ipv6_address)
+    |> prepend_matches(line, @mac_pattern, :mac_address)
+    |> prepend_matches(line, @email_pattern, :email)
+    |> prepend_matches(line, @url_pattern, :url)
+    |> prepend_matches(line, @uuid_pattern, :uuid)
+    |> prepend_matches(line, @log_level_pattern, :log_level)
+    |> prepend_timestamps(line)
   end
 
-  defp find_timestamps(tokens, line) do
-    matches = Enum.flat_map(@timestamp_patterns, fn pattern ->
-      find_pattern_matches(line, pattern, :timestamp)
-    end)
-    tokens ++ matches
+  # Efficient prepending helpers
+  defp prepend_matches(tokens, line, pattern, type) do
+    case Regex.scan(pattern, line, return: :index) do
+      [] -> tokens
+      matches ->
+        Enum.reduce(matches, tokens, fn match, acc ->
+          {start, len} = case match do
+            [{s, l}] -> {s, l}
+            [{s, l} | _] -> {s, l}
+          end
+          [Token.new(type, binary_part(line, start, len), start) | acc]
+        end)
+    end
   end
 
-  defp find_log_levels(tokens, line) do
-    tokens ++ find_pattern_matches(line, @log_level_pattern, :log_level)
-  end
-
-  defp find_uuids(tokens, line) do
-    tokens ++ find_pattern_matches(line, @uuid_pattern, :uuid)
-  end
-
-  defp find_urls(tokens, line) do
-    tokens ++ find_pattern_matches(line, @url_pattern, :url)
-  end
-
-  defp find_emails(tokens, line) do
-    tokens ++ find_pattern_matches(line, @email_pattern, :email)
-  end
-
-  defp find_macs(tokens, line) do
-    tokens ++ find_pattern_matches(line, @mac_pattern, :mac_address)
-  end
-
-  defp find_ipv6(tokens, line) do
-    tokens ++ find_pattern_matches(line, @ipv6_pattern, :ipv6_address)
-  end
-
-  defp find_ipv4(tokens, line) do
-    tokens ++ find_pattern_matches(line, @ipv4_pattern, :ip_address)
-  end
-
-  defp find_paths(tokens, line) do
-    tokens ++ find_pattern_matches(line, @path_pattern, :path)
-  end
-
-  defp find_domains(tokens, line) do
-    tokens ++ find_pattern_matches(line, @domain_pattern, :domain)
-  end
-
-  defp find_ports(tokens, line) do
-    # Special handling - capture group after colon
-    Regex.scan(@port_pattern, line, return: :index)
-    |> Enum.map(fn [{_full_start, _full_len}, {port_start, port_len}] ->
-      port_value = binary_part(line, port_start, port_len)
-      port_num = String.to_integer(port_value)
-      if port_num >= 1 and port_num <= 65535 do
-        Token.new(:port, port_value, port_start)
-      else
-        nil
-      end
-    end)
-    |> Enum.filter(& &1)
-    |> then(&(tokens ++ &1))
-  end
-
-  defp find_cidr(tokens, line) do
-    tokens ++ find_pattern_matches(line, @cidr_pattern, :cidr)
-  end
-
-  defp find_registry_keys(tokens, line) do
-    tokens ++ find_pattern_matches(line, @registry_pattern, :registry_key)
-  end
-
-  defp find_sids(tokens, line) do
-    tokens ++ find_pattern_matches(line, @sid_pattern, :sid)
-  end
-
-  defp find_event_ids(tokens, line) do
-    # Special handling - capture group for event ID number
-    Regex.scan(@event_id_pattern, line, return: :index)
-    |> Enum.map(fn [{full_start, full_len}, {_id_start, _id_len}] ->
-      value = binary_part(line, full_start, full_len)
-      Token.new(:event_id, value, full_start)
-    end)
-    |> then(&(tokens ++ &1))
-  end
-
-  defp find_spis(tokens, line) do
-    # Special handling - capture the whole SPI expression
-    Regex.scan(@spi_pattern, line, return: :index)
-    |> Enum.map(fn [{full_start, full_len} | _] ->
-      value = binary_part(line, full_start, full_len)
-      Token.new(:spi, value, full_start)
-    end)
-    |> then(&(tokens ++ &1))
-  end
-
-  defp find_hresults(tokens, line) do
-    tokens ++ find_pattern_matches(line, @hresult_pattern, :hresult)
-  end
-
-  defp find_hex_numbers(tokens, line) do
-    tokens ++ find_pattern_matches(line, @hex_pattern, :hex_number)
-  end
-
-  defp find_strings(tokens, line) do
-    tokens ++ find_pattern_matches(line, @string_pattern, :string)
-  end
-
-  defp find_keys(tokens, line) do
-    # Special handling - capture group for key name
-    Regex.scan(@key_pattern, line, return: :index)
-    |> Enum.map(fn [{_full_start, _full_len}, {key_start, key_len}] ->
-      key_value = binary_part(line, key_start, key_len)
-      Token.new(:key, key_value, key_start)
-    end)
-    |> then(&(tokens ++ &1))
-  end
-
-  defp find_http_methods(tokens, line) do
-    tokens ++ find_pattern_matches(line, @http_method_pattern, :http_method)
-  end
-
-  defp find_protocols(tokens, line) do
-    tokens ++ find_pattern_matches(line, @protocol_pattern, :protocol)
-  end
-
-  defp find_interfaces(tokens, line) do
-    tokens ++ find_pattern_matches(line, @interface_pattern, :interface)
-  end
-
-  defp find_vpn_keywords(tokens, line) do
-    lower_line = String.downcase(line)
-
-    vpn_tokens = @vpn_keywords
-    |> Enum.flat_map(fn kw ->
-      find_word_positions(lower_line, line, kw, :vpn_keyword)
-    end)
-
-    tokens ++ vpn_tokens
-  end
-
-  defp find_keywords(tokens, line) do
-    lower_line = String.downcase(line)
-
-    keyword_tokens = @keywords
-    |> Enum.flat_map(fn kw ->
-      find_word_positions(lower_line, line, kw, :keyword)
-    end)
-
-    tokens ++ keyword_tokens
-  end
-
-  defp find_http_status(tokens, line) do
-    # Only match status codes in context (after HTTP/, near keywords, etc.)
-    # For now, simple pattern - can be refined
-    tokens ++ find_pattern_matches(line, @http_status_pattern, :http_status)
-  end
-
-  defp find_word_positions(lower_line, original_line, word, type) do
-    pattern = ~r/\b#{Regex.escape(word)}\b/i
-
-    Regex.scan(pattern, lower_line, return: :index)
-    |> Enum.map(fn [{start, len}] ->
-      value = binary_part(original_line, start, len)
-      Token.new(type, value, start)
+  defp prepend_timestamps(tokens, line) do
+    Enum.reduce(@timestamp_patterns, tokens, fn pattern, acc ->
+      prepend_matches(acc, line, pattern, :timestamp)
     end)
   end
 
-  defp find_numbers(tokens, line) do
-    tokens ++ find_pattern_matches(line, @number_pattern, :number)
+  defp prepend_keys(tokens, line) do
+    case Regex.scan(@key_pattern, line, return: :index) do
+      [] -> tokens
+      matches ->
+        Enum.reduce(matches, tokens, fn [{_full_start, _full_len}, {key_start, key_len}], acc ->
+          [Token.new(:key, binary_part(line, key_start, key_len), key_start) | acc]
+        end)
+    end
   end
 
-  defp find_brackets(tokens, line) do
-    tokens ++ find_pattern_matches(line, @bracket_chars, :bracket)
+  defp prepend_ports(tokens, line) do
+    case Regex.scan(@port_pattern, line, return: :index) do
+      [] -> tokens
+      matches ->
+        Enum.reduce(matches, tokens, fn [{_full_start, _full_len}, {port_start, port_len}], acc ->
+          port_value = binary_part(line, port_start, port_len)
+          port_num = String.to_integer(port_value)
+          if port_num >= 1 and port_num <= 65535 do
+            [Token.new(:port, port_value, port_start) | acc]
+          else
+            acc
+          end
+        end)
+    end
   end
 
-  defp find_operators(tokens, line) do
-    tokens ++ find_pattern_matches(line, @operator_pattern, :operator)
+  defp prepend_event_ids(tokens, line) do
+    case Regex.scan(@event_id_pattern, line, return: :index) do
+      [] -> tokens
+      matches ->
+        Enum.reduce(matches, tokens, fn [{full_start, full_len} | _], acc ->
+          [Token.new(:event_id, binary_part(line, full_start, full_len), full_start) | acc]
+        end)
+    end
   end
 
-  defp find_identifiers(tokens, line) do
-    tokens ++ find_pattern_matches(line, @identifier_pattern, :identifier)
-  end
-
-  defp find_pattern_matches(line, pattern, type) do
-    Regex.scan(pattern, line, return: :index)
-    |> Enum.map(fn
-      [{start, len}] ->
-        value = binary_part(line, start, len)
-        Token.new(type, value, start)
-      [{start, len} | _groups] ->
-        value = binary_part(line, start, len)
-        Token.new(type, value, start)
-    end)
+  defp prepend_spis(tokens, line) do
+    case Regex.scan(@spi_pattern, line, return: :index) do
+      [] -> tokens
+      matches ->
+        Enum.reduce(matches, tokens, fn [{full_start, full_len} | _], acc ->
+          [Token.new(:spi, binary_part(line, full_start, full_len), full_start) | acc]
+        end)
+    end
   end
 
   # ============================================================================
